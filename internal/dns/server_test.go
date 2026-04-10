@@ -16,13 +16,13 @@ import (
 
 func testConfig(addr string) config.Config {
 	return config.Config{
-		Domain:      "test.io",
-		DNSAddr:     addr,
-		APIAddr:     ":0",
-		Nameservers: []string{"ns1.test.io", "ns2.test.io"},
-		GatewayIP:   "10.0.0.1",
-		SessionTTL:  1 * time.Hour,
-		DNSUDPSize:  4096,
+		Domains:      []string{"test.io"},
+		DNSAddr:      addr,
+		APIAddr:      ":0",
+		Nameservers:  []string{"ns1.test.io", "ns2.test.io"},
+		GatewayIP:    "10.0.0.1",
+		SessionTTL:   1 * time.Hour,
+		DNSUDPSize:   4096,
 		AdminContact: "admin.test.io",
 	}
 }

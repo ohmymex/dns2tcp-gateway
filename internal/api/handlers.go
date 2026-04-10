@@ -13,16 +13,17 @@ import (
 
 // tunnelResponse is the JSON response for tunnel creation.
 type tunnelResponse struct {
-	ID        string `json:"id"`
-	Subdomain string `json:"subdomain"`
-	Domain    string `json:"domain"`
-	Token     string `json:"token,omitempty"`
-	Mode      string `json:"mode"`
-	Target    string `json:"target,omitempty"`
-	RTCPPort  int    `json:"rtcp_port,omitempty"`
-	CreatedAt string `json:"created_at"`
-	ExpiresAt string `json:"expires_at"`
-	Message   string `json:"message"`
+	ID        string   `json:"id"`
+	Subdomain string   `json:"subdomain"`
+	Domain    string   `json:"domain"`
+	Domains   []string `json:"domains,omitempty"`
+	Token     string   `json:"token,omitempty"`
+	Mode      string   `json:"mode"`
+	Target    string   `json:"target,omitempty"`
+	RTCPPort  int      `json:"rtcp_port,omitempty"`
+	CreatedAt string   `json:"created_at"`
+	ExpiresAt string   `json:"expires_at"`
+	Message   string   `json:"message"`
 }
 
 // errorResponse is the JSON response for errors.
@@ -52,6 +53,16 @@ func isPrivateIP(ip net.IP) bool {
 	return false
 }
 
+// tunnelDomains returns all configured domains with the subdomain prepended.
+// Used in API responses so clients know all available domain aliases for the tunnel.
+func (s *Server) tunnelDomains(subdomain string) []string {
+	domains := make([]string, len(s.cfg.Domains))
+	for i, d := range s.cfg.Domains {
+		domains[i] = fmt.Sprintf("%s.%s", subdomain, d)
+	}
+	return domains
+}
+
 func (s *Server) handleCreateTCP(w http.ResponseWriter, r *http.Request) {
 	ip := r.PathValue("ip")
 	portStr := r.PathValue("port")
@@ -78,11 +89,12 @@ func (s *Server) handleCreateTCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fqdn := fmt.Sprintf("%s.%s", sess.Subdomain, s.cfg.Domain)
+	fqdn := fmt.Sprintf("%s.%s", sess.Subdomain, s.cfg.PrimaryDomain())
 	s.writeJSON(w, http.StatusCreated, tunnelResponse{
 		ID:        sess.ID,
 		Subdomain: sess.Subdomain,
 		Domain:    fqdn,
+		Domains:   s.tunnelDomains(sess.Subdomain),
 		Token:     sess.Token,
 		Mode:      sess.Mode.String(),
 		Target:    sess.Target(),
@@ -118,11 +130,12 @@ func (s *Server) handleCreateNS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fqdn := fmt.Sprintf("%s.%s", sess.Subdomain, s.cfg.Domain)
+	fqdn := fmt.Sprintf("%s.%s", sess.Subdomain, s.cfg.PrimaryDomain())
 	s.writeJSON(w, http.StatusCreated, tunnelResponse{
 		ID:        sess.ID,
 		Subdomain: sess.Subdomain,
 		Domain:    fqdn,
+		Domains:   s.tunnelDomains(sess.Subdomain),
 		Token:     sess.Token,
 		Mode:      sess.Mode.String(),
 		Target:    sess.Target(),
@@ -149,17 +162,18 @@ func (s *Server) handleCreateRTCP(w http.ResponseWriter, r *http.Request) {
 
 	sess.RTCPPort = rtcpSess.Port
 
-	fqdn := fmt.Sprintf("%s.%s", sess.Subdomain, s.cfg.Domain)
+	fqdn := fmt.Sprintf("%s.%s", sess.Subdomain, s.cfg.PrimaryDomain())
 	s.writeJSON(w, http.StatusCreated, tunnelResponse{
 		ID:        sess.ID,
 		Subdomain: sess.Subdomain,
 		Domain:    fqdn,
+		Domains:   s.tunnelDomains(sess.Subdomain),
 		Token:     sess.Token,
 		Mode:      sess.Mode.String(),
 		RTCPPort:  rtcpSess.Port,
 		CreatedAt: sess.CreatedAt.Format(time.RFC3339),
 		ExpiresAt: sess.ExpiresAt.Format(time.RFC3339),
-		Message:   fmt.Sprintf("use 'nc %s %d'. DNS tunnel to %s will terminate here.", s.cfg.Domain, rtcpSess.Port, fqdn),
+		Message:   fmt.Sprintf("use 'nc %s %d'. DNS tunnel to %s will terminate here.", s.cfg.PrimaryDomain(), rtcpSess.Port, fqdn),
 	})
 }
 
@@ -172,11 +186,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fqdn := fmt.Sprintf("%s.%s", sess.Subdomain, s.cfg.Domain)
+	fqdn := fmt.Sprintf("%s.%s", sess.Subdomain, s.cfg.PrimaryDomain())
 	s.writeJSON(w, http.StatusOK, tunnelResponse{
 		ID:        sess.ID,
 		Subdomain: sess.Subdomain,
 		Domain:    fqdn,
+		Domains:   s.tunnelDomains(sess.Subdomain),
 		Mode:      sess.Mode.String(),
 		Target:    sess.Target(),
 		RTCPPort:  sess.RTCPPort,

@@ -40,7 +40,7 @@ func run() error {
 	}
 
 	// Print startup banner to stderr (stdout is for structured logs).
-	banner.Print(os.Stderr, cfg.Domain, cfg.DNSAddr, cfg.APIAddr)
+	banner.Print(os.Stderr, cfg.Domains, cfg.DNSAddr, cfg.APIAddr)
 
 	// Shared session store, injected into both DNS and API servers.
 	store := session.NewMemoryStore(logger)
@@ -111,8 +111,15 @@ func run() error {
 func loadConfig() config.Config {
 	cfg := config.Default()
 
+	// GATEWAY_DOMAIN accepts a single domain or a comma-separated list of domains.
+	// The first domain in the list is the primary one, used in API responses.
+	// Example: GATEWAY_DOMAIN=tun.numex.sh,tun.example.com
 	if v := os.Getenv("GATEWAY_DOMAIN"); v != "" {
-		cfg.Domain = v
+		domains := strings.Split(v, ",")
+		for i := range domains {
+			domains[i] = strings.TrimSpace(domains[i])
+		}
+		cfg.Domains = domains
 	}
 	if v := os.Getenv("GATEWAY_DNS_ADDR"); v != "" {
 		cfg.DNSAddr = v
@@ -136,7 +143,7 @@ func loadConfig() config.Config {
 	if envBool("GATEWAY_TLS") {
 		cfg.TLSEnabled = true
 		cfg.APIAddr = ":443"
-		cfg.TLSHosts = []string{cfg.Domain}
+		cfg.TLSHosts = cfg.Domains
 		if v := os.Getenv("GATEWAY_TLS_HOSTS"); v != "" {
 			cfg.TLSHosts = strings.Split(v, ",")
 		}

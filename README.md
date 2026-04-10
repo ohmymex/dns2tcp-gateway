@@ -101,6 +101,41 @@ GATEWAY_TLS=true \
 
 Port 53 requires root or `setcap cap_net_bind_service=+ep ./dns2tcp-gateway`.
 
+### Multiple domains
+
+The gateway can serve multiple domains simultaneously. Pass a comma-separated list to `GATEWAY_DOMAIN`:
+
+```bash
+GATEWAY_DOMAIN=tun.domain.com,tun.example.com \
+GATEWAY_IP=<VPS_PUBLIC_IP> \
+GATEWAY_DNS_ADDR=:53 \
+./dns2tcp-gateway
+```
+
+The first domain in the list is the primary one, used in API responses and banner output. All domains share the same session store, so a tunnel created via any domain is reachable through any other domain in the list.
+
+Each domain needs its own NS delegation:
+
+```
+tun.domain.com       NS    ns1.tun.domain.com
+ns1.tun.domain.com   A     <VPS_PUBLIC_IP>
+
+tun.example.com      NS    ns1.tun.example.com
+ns1.tun.example.com  A     <VPS_PUBLIC_IP>
+```
+
+The API response includes a `domains` field listing all available domain aliases for the tunnel:
+
+```json
+{
+  "subdomain": "a3f2bc",
+  "domain": "a3f2bc.tun.domain.com",
+  "domains": ["a3f2bc.tun.domain.com", "a3f2bc.tun.example.com"],
+  "mode": "tcp",
+  "target": "1.2.3.4:4444"
+}
+```
+
 ### Create a tunnel and connect
 
 ```bash
@@ -132,6 +167,7 @@ curl -X POST https://tun.domain.com/v1/tcp/10.0.0.5/4444
 {
   "subdomain": "a3f2bc",
   "domain": "a3f2bc.tun.domain.com",
+  "domains": ["a3f2bc.tun.domain.com"],
   "token": "c2334e6cfda45870a132286ac5d298e4",
   "mode": "tcp",
   "target": "10.0.0.5:4444",
@@ -139,7 +175,7 @@ curl -X POST https://tun.domain.com/v1/tcp/10.0.0.5/4444
 }
 ```
 
-Save the `token` value. You need it to delete the tunnel.
+The `domains` field lists all configured domain aliases for the tunnel. When the gateway serves multiple domains, all of them appear here. Save the `token` value. You need it to delete the tunnel.
 
 ### Create NS delegation
 
@@ -196,7 +232,7 @@ All configuration is through environment variables.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GATEWAY_DOMAIN` | `domain.com` | Base domain for tunnel subdomains |
+| `GATEWAY_DOMAIN` | `domain.com` | Base domain(s) for tunnel subdomains (comma-separated for multiple) |
 | `GATEWAY_IP` | `127.0.0.1` | Public IP of this server |
 | `GATEWAY_DNS_ADDR` | `:53` | DNS listen address |
 | `GATEWAY_API_ADDR` | `:8080` | API listen address (`:443` when TLS enabled) |

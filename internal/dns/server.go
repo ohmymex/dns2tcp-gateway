@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/miekg/dns"
@@ -34,7 +35,10 @@ func New(cfg config.Config, store session.Store, tunnelMgr *tunnel.Manager, logg
 	}
 
 	mux := dns.NewServeMux()
-	mux.HandleFunc(cfg.FQDN(), s.handleQuery)
+	// Register the query handler for each configured domain zone.
+	for _, zone := range cfg.FQDNs() {
+		mux.HandleFunc(zone, s.handleQuery)
+	}
 
 	s.udp = &dns.Server{
 		Addr:    cfg.DNSAddr,
@@ -88,7 +92,7 @@ func (s *Server) Start() error {
 
 	s.logger.Info("dns server listening",
 		"addr", s.cfg.DNSAddr,
-		"zone", s.cfg.FQDN(),
+		"zones", s.cfg.FQDNs(),
 		"udp_size", s.cfg.DNSUDPSize,
 	)
 	return nil
@@ -106,6 +110,21 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		return fmt.Errorf("dns tcp shutdown: %w", tcpErr)
 	}
 	return nil
+}
+
+// matchZone returns the FQDN zone that the query name belongs to.
+// It iterates through all configured domains and returns the first match.
+// Falls back to the primary domain if no match is found (shouldn't happen
+// because the mux only routes matching queries to us).
+func (s *Server) matchZone(qname string) string {
+	qname = dns.CanonicalName(qname)
+	for _, zone := range s.cfg.FQDNs() {
+		canonical := dns.CanonicalName(zone)
+		if qname == canonical || strings.HasSuffix(qname, "."+canonical) {
+			return zone
+		}
+	}
+	return s.cfg.PrimaryFQDN()
 }
 
 // handleQuery is the main DNS query handler for the zone.
@@ -129,23 +148,26 @@ func (s *Server) handleQuery(w dns.ResponseWriter, r *dns.Msg) {
 		"remote", w.RemoteAddr().String(),
 	)
 
+	// Determine which configured zone this query belongs to.
+	zone := s.matchZone(q.Name)
+
 	switch q.Qtype {
 	case dns.TypeSOA:
-		msg.Answer = append(msg.Answer, s.soaRecord(q.Name))
+		msg.Answer = append(msg.Answer, s.soaRecord(zone))
 	case dns.TypeNS:
-		s.handleNS(msg, q)
+		s.handleNS(msg, q, zone)
 	case dns.TypeA:
-		s.handleA(msg, q)
+		s.handleA(msg, q, zone)
 	case dns.TypeTXT:
-		s.handleTXT(msg, q)
+		s.handleTXT(msg, q, zone)
 	case dns.TypeANY:
-		msg.Answer = append(msg.Answer, s.soaRecord(q.Name))
-		for _, ns := range s.nsRecords(q.Name) {
+		msg.Answer = append(msg.Answer, s.soaRecord(zone))
+		for _, ns := range s.nsRecords(zone) {
 			msg.Answer = append(msg.Answer, ns)
 		}
 	default:
 		// For unsupported types, return SOA in authority section (proper NODATA response).
-		msg.Ns = append(msg.Ns, s.soaRecord(s.cfg.FQDN()))
+		msg.Ns = append(msg.Ns, s.soaRecord(zone))
 	}
 
 	// EDNS0: mirror the client's OPT record if present.
@@ -160,9 +182,7 @@ func (s *Server) handleQuery(w dns.ResponseWriter, r *dns.Msg) {
 	s.writeMsg(w, msg)
 }
 
-func (s *Server) handleNS(msg *dns.Msg, q dns.Question) {
-	zone := s.cfg.FQDN()
-
+func (s *Server) handleNS(msg *dns.Msg, q dns.Question, zone string) {
 	// Check if this is a session subdomain with NS mode.
 	subdomain := extractSubdomain(q.Name, zone)
 	if subdomain != "" {
@@ -217,8 +237,7 @@ func (s *Server) handleNS(msg *dns.Msg, q dns.Question) {
 	}
 }
 
-func (s *Server) handleA(msg *dns.Msg, q dns.Question) {
-	zone := s.cfg.FQDN()
+func (s *Server) handleA(msg *dns.Msg, q dns.Question, zone string) {
 	gwIP := net.ParseIP(s.cfg.GatewayIP).To4()
 
 	// For the zone apex or any known subdomain, return our gateway IP.
@@ -243,19 +262,18 @@ func (s *Server) handleA(msg *dns.Msg, q dns.Question) {
 	})
 }
 
-func (s *Server) handleTXT(msg *dns.Msg, q dns.Question) {
-	zone := s.cfg.FQDN()
+func (s *Server) handleTXT(msg *dns.Msg, q dns.Question, zone string) {
 
 	// Try to decode as dns2tcp protocol query.
 	parsed, err := protocol.DecodeQuery(q.Name, zone)
 	if err != nil {
 		s.logger.Debug("not a dns2tcp query, treating as plain", "name", q.Name, "error", err)
-		s.handlePlainTXT(msg, q)
+		s.handlePlainTXT(msg, q, zone)
 		return
 	}
 
 	if parsed.Packet == nil && parsed.Command == "" {
-		s.handlePlainTXT(msg, q)
+		s.handlePlainTXT(msg, q, zone)
 		return
 	}
 
@@ -263,7 +281,7 @@ func (s *Server) handleTXT(msg *dns.Msg, q dns.Question) {
 	resp, err := s.tunnel.HandleQuery(context.Background(), parsed)
 	if err != nil {
 		s.logger.Debug("tunnel query failed, falling back to plain", "error", err, "name", q.Name)
-		s.handlePlainTXT(msg, q)
+		s.handlePlainTXT(msg, q, zone)
 		return
 	}
 
@@ -271,7 +289,7 @@ func (s *Server) handleTXT(msg *dns.Msg, q dns.Question) {
 	// active command, fall back to plain TXT handling. This prevents random
 	// subdomains from being treated as tunnel protocol queries.
 	if resp.Type == protocol.TypeErr && parsed.Command == "" {
-		s.handlePlainTXT(msg, q)
+		s.handlePlainTXT(msg, q, zone)
 		return
 	}
 
@@ -291,8 +309,7 @@ func (s *Server) handleTXT(msg *dns.Msg, q dns.Question) {
 	})
 }
 
-func (s *Server) handlePlainTXT(msg *dns.Msg, q dns.Question) {
-	zone := s.cfg.FQDN()
+func (s *Server) handlePlainTXT(msg *dns.Msg, q dns.Question, zone string) {
 	subdomain := extractSubdomain(q.Name, zone)
 
 	if subdomain == "" {
@@ -319,15 +336,15 @@ func (s *Server) handlePlainTXT(msg *dns.Msg, q dns.Question) {
 	})
 }
 
-func (s *Server) soaRecord(name string) *dns.SOA {
-	ns := "ns1." + s.cfg.FQDN()
+func (s *Server) soaRecord(zone string) *dns.SOA {
+	ns := "ns1." + zone
 	if len(s.cfg.Nameservers) > 0 {
 		ns = dns.Fqdn(s.cfg.Nameservers[0])
 	}
 
 	return &dns.SOA{
 		Hdr: dns.RR_Header{
-			Name:   s.cfg.FQDN(),
+			Name:   zone,
 			Rrtype: dns.TypeSOA,
 			Class:  dns.ClassINET,
 			Ttl:    60,
@@ -342,12 +359,12 @@ func (s *Server) soaRecord(name string) *dns.SOA {
 	}
 }
 
-func (s *Server) nsRecords(name string) []dns.RR {
+func (s *Server) nsRecords(zone string) []dns.RR {
 	records := make([]dns.RR, 0, len(s.cfg.Nameservers))
 	for _, ns := range s.cfg.Nameservers {
 		records = append(records, &dns.NS{
 			Hdr: dns.RR_Header{
-				Name:   s.cfg.FQDN(),
+				Name:   zone,
 				Rrtype: dns.TypeNS,
 				Class:  dns.ClassINET,
 				Ttl:    300,

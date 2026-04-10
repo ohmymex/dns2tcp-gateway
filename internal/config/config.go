@@ -8,8 +8,11 @@ import (
 
 // Config holds all configuration for the gateway.
 type Config struct {
-	// Domain is the base domain for tunnel subdomains (e.g. "thc.io").
-	Domain string
+	// Domains is the list of base domains for tunnel subdomains (e.g. ["thc.io", "example.com"]).
+	// The first domain is the primary one, used in API responses and banner output.
+	// All domains share the same session store, so a tunnel created on any domain
+	// is reachable through any other domain in the list.
+	Domains []string
 
 	// DNSAddr is the listen address for the DNS server (e.g. ":53").
 	DNSAddr string
@@ -66,7 +69,7 @@ type Config struct {
 // Default returns a Config populated with sensible production defaults.
 func Default() Config {
 	return Config{
-		Domain:          "thc.io",
+		Domains:         []string{"thc.io"},
 		DNSAddr:         ":53",
 		APIAddr:         ":8080",
 		Nameservers:     []string{}, // derived from Domain in main.go
@@ -85,14 +88,15 @@ func Default() Config {
 	}
 }
 
-// ApplyDomainDefaults derives nameservers and admin contact from the domain
+// ApplyDomainDefaults derives nameservers and admin contact from the primary domain
 // if they haven't been explicitly set.
 func (c *Config) ApplyDomainDefaults() {
+	primary := c.PrimaryDomain()
 	if len(c.Nameservers) == 0 {
-		c.Nameservers = []string{"ns1." + c.Domain, "ns2." + c.Domain}
+		c.Nameservers = []string{"ns1." + primary, "ns2." + primary}
 	}
 	if c.AdminContact == "" {
-		c.AdminContact = "admin." + c.Domain
+		c.AdminContact = "admin." + primary
 	}
 	if c.TLSCertDir == "" {
 		c.TLSCertDir = "/var/lib/dns2tcp/certs"
@@ -101,8 +105,8 @@ func (c *Config) ApplyDomainDefaults() {
 
 // Validate checks that all required fields are set and values are within acceptable ranges.
 func (c Config) Validate() error {
-	if c.Domain == "" {
-		return fmt.Errorf("config: domain must not be empty")
+	if len(c.Domains) == 0 || c.Domains[0] == "" {
+		return fmt.Errorf("config: at least one domain is required")
 	}
 	if c.DNSAddr == "" {
 		return fmt.Errorf("config: dns address must not be empty")
@@ -131,9 +135,35 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// FQDN returns the domain as a fully qualified domain name (trailing dot).
-func (c Config) FQDN() string {
-	d := c.Domain
+// PrimaryDomain returns the first (primary) domain from the list.
+// The primary domain is used in API responses, banner output, and as the
+// default zone for operations that need a single domain reference.
+func (c Config) PrimaryDomain() string {
+	if len(c.Domains) == 0 {
+		return ""
+	}
+	return c.Domains[0]
+}
+
+// PrimaryFQDN returns the primary domain as a fully qualified domain name (trailing dot).
+func (c Config) PrimaryFQDN() string {
+	return fqdn(c.PrimaryDomain())
+}
+
+// FQDNs returns all configured domains as fully qualified domain names (trailing dots).
+func (c Config) FQDNs() []string {
+	fqdns := make([]string, len(c.Domains))
+	for i, d := range c.Domains {
+		fqdns[i] = fqdn(d)
+	}
+	return fqdns
+}
+
+// fqdn ensures a domain has a trailing dot.
+func fqdn(d string) string {
+	if d == "" {
+		return "."
+	}
 	if d[len(d)-1] != '.' {
 		d += "."
 	}
