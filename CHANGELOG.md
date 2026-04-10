@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.5
+
+### Features
+
+* Multi-domain support: `GATEWAY_DOMAIN=domain1.com,domain2.com` (contributed by [@extencil](https://github.com/extencil))
+* API responses include `domains` field listing all configured domain aliases
+* DNS server registers handlers for all configured zones
+* All domains share the same session store
+
 ## v0.1.4
 
 ### Security
