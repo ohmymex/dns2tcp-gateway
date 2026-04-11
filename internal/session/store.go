@@ -9,12 +9,12 @@ import (
 )
 
 // Store defines the interface for session persistence.
-// Defined at the consumer side, following Go convention.
 type Store interface {
 	Put(ctx context.Context, s *Session) error
 	Get(ctx context.Context, subdomain string) (*Session, bool)
 	Delete(ctx context.Context, subdomain string) bool
 	ListByOwner(ctx context.Context, ownerIP string) []*Session
+	ExtendTTL(ctx context.Context, subdomain string, d time.Duration) (*Session, bool)
 	Count() int
 }
 
@@ -96,6 +96,20 @@ func (m *MemoryStore) ListByOwner(_ context.Context, ownerIP string) []*Session 
 		}
 	}
 	return result
+}
+
+// ExtendTTL atomically extends a session's expiry. Returns the updated session.
+func (m *MemoryStore) ExtendTTL(_ context.Context, subdomain string, d time.Duration) (*Session, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	s, ok := m.sessions[subdomain]
+	if !ok || s.IsExpired() {
+		return nil, false
+	}
+	s.ExpiresAt = time.Now().Add(d)
+	m.logger.Info("session extended", "subdomain", subdomain, "expires_at", s.ExpiresAt.Format(time.RFC3339))
+	return s, true
 }
 
 func (m *MemoryStore) Count() int {

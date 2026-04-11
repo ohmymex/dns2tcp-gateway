@@ -18,8 +18,28 @@ builds:
       - amd64
       - arm64
 
+  - id: dns2tcp-client
+    main: ./cmd/dns2tcp-client
+    binary: dns2tcp-client
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X github.com/ohmymex/dns2tcp-gateway/internal/version.Version={{.Version}}
+      - -X github.com/ohmymex/dns2tcp-gateway/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/ohmymex/dns2tcp-gateway/internal/version.BuildDate={{.Date}}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
 archives:
   - id: dns2tcp-gateway
+    builds:
+      - dns2tcp-gateway
+      - dns2tcp-client
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:

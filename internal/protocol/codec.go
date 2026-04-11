@@ -9,8 +9,8 @@ import (
 // dns2tcp uses standard base64 without padding.
 var encoding = base64.StdEncoding.WithPadding(base64.NoPadding)
 
-// Command prefixes used in dns2tcp protocol.
-// These appear as labels in the DNS query name: <data>.=<command>.<subdomain>.<zone>
+/* Command prefixes used in dns2tcp protocol.
+ * These appear as labels in the DNS query name: <data>.=<command>.<subdomain>.<zone> */
 const (
 	CmdAuth     = "auth"
 	CmdResource = "resource"
@@ -119,13 +119,108 @@ func EncodeResponse(p *Packet) string {
 	return encoding.EncodeToString(p.Marshal())
 }
 
-// EncodeTXTResponse builds a TXT record value.
-// dns2tcp TXT responses prepend a single-char index ('A' + answerIndex)
-// followed by the base64-encoded packet data.
+/*
+ * EncodeTXTResponse builds a TXT record value.
+ * dns2tcp TXT responses prepend a single-char index ('A' + answerIndex)
+ * followed by the base64-encoded packet data.
+ */
 func EncodeTXTResponse(p *Packet, answerIndex int) string {
 	indexChar := byte('A') + byte(answerIndex)
 	encoded := encoding.EncodeToString(p.Marshal())
 	return string(indexChar) + encoded
+}
+
+/*
+ * EncodeQuery builds a dns2tcp QNAME for sending queries to the server.
+ * domain is the full tunnel domain including subdomain (e.g. "m6kfjz.tun.numex.sh").
+ * command is "auth", "resource", "connect", or "" for data queries.
+ *
+ * Output format: <base64-labels>.[=<command>.]<domain>.
+ * Base64 data is split into 63-byte DNS labels when needed.
+ */
+func EncodeQuery(pkt *Packet, command, domain string) string {
+	encoded := encoding.EncodeToString(pkt.Marshal())
+
+	// Split base64 into DNS-safe labels (max 63 chars per label).
+	var parts []string
+	for len(encoded) > 63 {
+		parts = append(parts, encoded[:63])
+		encoded = encoded[63:]
+	}
+	if len(encoded) > 0 {
+		parts = append(parts, encoded)
+	}
+
+	if command != "" {
+		parts = append(parts, "="+command)
+	}
+
+	return strings.Join(parts, ".") + "." + strings.TrimSuffix(domain, ".") + "."
+}
+
+/*
+ * DecodeTXTResponse decodes a dns2tcp TXT response into a Packet.
+ * The txt slice comes from miekg/dns TXT.Txt (character-strings, 63-byte chunks).
+ * First byte is an index char ('A' + answerIndex), rest is base64-encoded packet.
+ */
+func DecodeTXTResponse(txt []string) (*Packet, error) {
+	if len(txt) == 0 {
+		return nil, fmt.Errorf("protocol: empty TXT response")
+	}
+	data := strings.Join(txt, "")
+	if len(data) < 2 {
+		return nil, fmt.Errorf("protocol: TXT response too short (%d bytes)", len(data))
+	}
+	raw, err := encoding.DecodeString(data[1:])
+	if err != nil {
+		return nil, fmt.Errorf("protocol: base64 decode response: %w", err)
+	}
+	return Unmarshal(raw)
+}
+
+/*
+ * MaxQueryPayload returns the maximum raw payload bytes (excluding the 7-byte
+ * header) that fit in a single dns2tcp data query for the given domain.
+ * Accounts for DNS wire format overhead (label length bytes, root null).
+ */
+func MaxQueryPayload(domain string) int {
+	// DNS QNAME wire limit: 255 bytes including all length prefixes and root null.
+	labels := strings.Split(strings.TrimSuffix(domain, "."), ".")
+	overhead := 0
+	for _, l := range labels {
+		overhead += 1 + len(l) // length prefix + label data
+	}
+	overhead++ // root null byte
+
+	available := 255 - overhead
+	if available <= 0 {
+		return 0
+	}
+
+	// Each base64 label costs 1 wire byte (length prefix) + up to 63 data bytes.
+	var b64 int
+	for available >= 2 {
+		chunk := available
+		if chunk > 64 {
+			chunk = 64
+		}
+		b64 += chunk - 1
+		available -= chunk
+	}
+
+	// base64 no-padding -> raw byte count
+	raw := b64 / 4 * 3
+	switch b64 % 4 {
+	case 2:
+		raw++
+	case 3:
+		raw += 2
+	}
+
+	if raw <= HeaderSize {
+		return 0
+	}
+	return raw - HeaderSize
 }
 
 // EncodeTXTChunks builds TXT record string chunks compatible with dns2tcp's

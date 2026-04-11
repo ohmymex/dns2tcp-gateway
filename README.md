@@ -1,6 +1,8 @@
 # DNS2TCP Gateway
 
-DNS tunnel gateway as a service. Eliminates the pain of setting up domain servers, domain names, and public IPs for DNS tunneling. Users curl a REST API to get a randomly generated subdomain, then use that subdomain with dns2tcpc, iodine, or sshimpanzee.
+DNS tunnel gateway as a service. Eliminates the pain of setting up domain servers, domain names, and public IPs for DNS tunneling. Users curl a REST API to get a randomly generated subdomain, then use that subdomain with the native Go client, dns2tcpc, iodine, or sshimpanzee.
+
+Ships two binaries: `dns2tcp-gateway` (server) and `dns2tcp-client` (native Go client).
 
 Based on [THC hackerschoice/ToolsWeNeed](https://github.com/orgs/hackerschoice/projects/4/views/1?pane=issue&itemId=54763597) by SkyperTHC.
 
@@ -11,9 +13,9 @@ TARGET                                                              RECEIVER
   |                                                                    |
   +-- TCP traffic                                                      |
   v                                                                    |
-dns2tcpc --DNS queries--> [Global DNS] --> [xxx.domain.com] --> dns2tcp ---+
-                                           XXXXXXXXXXXXX               v
-                                           this gateway            TCP output
+dns2tcp-client --DNS queries--> [Global DNS] --> [xxx.domain.com] --> gateway ---+
+                                                 XXXXXXXXXXXXXXX              v
+                                                 this gateway             TCP output
 ```
 
 The part marked with `XXX` is the pain point for most users: you need a domain, NS delegation, a public server, and a running dns2tcpd. This gateway handles all of that. Just curl and go.
@@ -41,22 +43,53 @@ curl https://domain.com/v1/rtcp
 # -> "use 'nc domain.com 31337'. DNS tunnel to adsgr.domain.com will terminate here."
 ```
 
-## Public service
+## Public instances
 
-A public instance is running at **tun.numex.sh**. Try it without setting up anything:
+| Domain | Operator | Notes |
+|--------|----------|-------|
+| tun.numex.sh | [@ohmymex](https://github.com/ohmymex) | Primary instance |
+| tun.metasploit.io | [@extencil](https://github.com/extencil) | Hosted on haltman.io |
+| tunnel.metasploit.io | [@extencil](https://github.com/extencil) | Hosted on haltman.io |
+| tun.cobaltstrike.org | [@extencil](https://github.com/extencil) | Hosted on haltman.io |
+| tunnel.cobaltstrike.org | [@extencil](https://github.com/extencil) | Hosted on haltman.io |
+
+Try it without setting up anything:
 
 ```bash
 # Create a tunnel to any TCP target
 SUB=$(curl -s -X POST https://tun.numex.sh/v1/tcp/<ip>/<port> | jq -r .subdomain)
 
-# Start dns2tcp client (pick any supported resolver)
+# Connect with the native Go client
+dns2tcp-client -z $SUB.tun.numex.sh -r tunnel -l 2222 -d 1.1.1.1
+
+# Or use the C client
 dns2tcpc -r tunnel -z $SUB.tun.numex.sh -l 2222 1.1.1.1
 
-# Connect through the tunnel (example: SSH)
+# SSH through the tunnel
 ssh -p 2222 user@127.0.0.1
 ```
 
 Replace `<ip>` and `<port>` with your target. Works with any TCP service, not just SSH.
+
+## Native Go client
+
+`dns2tcp-client` is a native Go replacement for the C `dns2tcpc` tool. Same wire protocol, drop-in compatible, zero external dependencies.
+
+```bash
+# Port forwarding mode
+dns2tcp-client -z <subdomain>.<domain> -r tunnel -l <local_port> -d <resolver>
+
+# SSH ProxyCommand mode (no local port needed)
+ssh -o ProxyCommand="dns2tcp-client -z $SUB.tun.numex.sh -r tunnel -l - -d 1.1.1.1" user@target
+```
+
+| Flag | Description |
+|------|-------------|
+| `-z` | DNS zone (e.g. `m6kfjz.tun.numex.sh`) |
+| `-r` | Resource name (e.g. `tunnel`). Omit to list available resources. |
+| `-l` | Local listen port, or `-` for stdin/stdout |
+| `-d` | DNS resolver (default: system resolver from /etc/resolv.conf) |
+| `-k` | Tunnel authentication key (if server requires one) |
 
 ## Supported DNS resolvers
 
@@ -76,7 +109,6 @@ Google Public DNS applies case randomization to query names for cache poisoning 
 
 1. A VPS with a public IP
 2. A domain with NS delegation configured (see DNS Setup below)
-3. `dns2tcpc` installed on the client (`apt install dns2tcp` on Debian/Ubuntu)
 
 ### DNS Setup (Cloudflare example)
 
@@ -124,25 +156,16 @@ tun.example.com      NS    ns1.tun.example.com
 ns1.tun.example.com  A     <VPS_PUBLIC_IP>
 ```
 
-The API response includes a `domains` field listing all available domain aliases for the tunnel:
-
-```json
-{
-  "subdomain": "a3f2bc",
-  "domain": "a3f2bc.tun.domain.com",
-  "domains": ["a3f2bc.tun.domain.com", "a3f2bc.tun.example.com"],
-  "mode": "tcp",
-  "target": "1.2.3.4:4444"
-}
-```
-
 ### Create a tunnel and connect
 
 ```bash
 # Create tunnel (from any machine)
 SUB=$(curl -s -X POST https://tun.domain.com/v1/tcp/<ip>/<port> | jq -r .subdomain)
 
-# Start dns2tcp client (pick any supported resolver)
+# Connect with the native Go client
+dns2tcp-client -z $SUB.tun.domain.com -r tunnel -l <local_port> -d 1.1.1.1
+
+# Or use the C client
 dns2tcpc -r tunnel -z $SUB.tun.domain.com -l <local_port> 1.1.1.1
 
 # Connect through the tunnel
@@ -151,13 +174,42 @@ nc 127.0.0.1 <local_port>
 
 ## API
 
+### List your tunnels
+
+```
+GET /v1/tunnels
+```
+
+Returns all tunnels owned by the requester's IP. Tokens are not included in the response.
+
+```bash
+curl https://tun.domain.com/v1/tunnels
+```
+
+```json
+{
+  "tunnels": [
+    {
+      "subdomain": "a3f2bc",
+      "domain": "a3f2bc.tun.domain.com",
+      "mode": "tcp",
+      "target": "10.0.0.5:4444",
+      "created_at": "2026-04-11T15:00:00Z",
+      "expires_at": "2026-04-11T16:00:00Z"
+    }
+  ],
+  "count": 1,
+  "limit": 10
+}
+```
+
 ### Create TCP tunnel
 
 ```
 POST /v1/tcp/{ip}/{port}
 ```
 
-Creates a tunnel that forwards to `ip:port`. Returns a subdomain to use with dns2tcpc.
+Creates a tunnel that forwards to `ip:port`. Returns a subdomain and a token for management.
 
 ```bash
 curl -X POST https://tun.domain.com/v1/tcp/10.0.0.5/4444
@@ -175,7 +227,7 @@ curl -X POST https://tun.domain.com/v1/tcp/10.0.0.5/4444
 }
 ```
 
-The `domains` field lists all configured domain aliases for the tunnel. When the gateway serves multiple domains, all of them appear here. Save the `token` value. You need it to delete the tunnel.
+Save the `token` value. You need it to extend or delete the tunnel.
 
 ### Create NS delegation
 
@@ -199,6 +251,27 @@ Allocates a port on the gateway. Connect to it with `nc`, and the DNS tunnel ter
 
 ```bash
 curl -X POST https://tun.domain.com/v1/rtcp
+```
+
+### Extend tunnel TTL
+
+```
+PATCH /v1/{subdomain}
+Authorization: Bearer <token>
+```
+
+Refreshes the tunnel's expiry by the configured session TTL (default 1 hour).
+
+```bash
+curl -X PATCH https://tun.domain.com/v1/a3f2bc -H "Authorization: Bearer c2334e6cfda45870a132286ac5d298e4"
+```
+
+```json
+{
+  "subdomain": "a3f2bc",
+  "expires_at": "2026-04-11T17:00:00Z",
+  "message": "tunnel extended by 1h0m0s"
+}
 ```
 
 ### Check tunnel status
@@ -239,6 +312,7 @@ All configuration is through environment variables.
 | `GATEWAY_TLS` | `false` | Enable Let's Encrypt autocert |
 | `GATEWAY_REVERSE_PROXY` | `false` | Run behind nginx/caddy |
 | `GATEWAY_TUNNEL_KEY` | (empty) | Shared auth key, empty = no auth |
+| `GATEWAY_MAX_TUNNELS_PER_IP` | `10` | Max concurrent tunnels per source IP |
 | `LOG_LEVEL` | `info` | Log level: debug, info, warn, error |
 
 ## Build from source
@@ -246,19 +320,29 @@ All configuration is through environment variables.
 ```bash
 git clone https://github.com/ohmymex/dns2tcp-gateway.git
 cd dns2tcp-gateway
-make build
+
+# Build both binaries
+make build-all
+
+# Or build individually
+make build          # gateway only
+make build-client   # client only
 ```
 
 Cross compile for Linux:
 
 ```bash
-GOOS=linux GOARCH=amd64 make build
+GOOS=linux GOARCH=amd64 make build-all
 ```
 
 ## Install with go
 
 ```bash
+# Gateway
 go install github.com/ohmymex/dns2tcp-gateway/cmd/dns2tcp@latest
+
+# Client
+go install github.com/ohmymex/dns2tcp-gateway/cmd/dns2tcp-client@latest
 ```
 
 ## Systemd service
@@ -276,6 +360,7 @@ systemctl start dns2tcp-gateway
 
 | Tool | Mode | How to use |
 |------|------|------------|
+| dns2tcp-client (native) | TCP | `dns2tcp-client -z SUB.domain -r tunnel -l PORT -d RESOLVER` |
 | [dns2tcp](https://github.com/alex-sector/dns2tcp) | TCP | `dns2tcpc -r tunnel -z SUB.domain -l PORT RESOLVER` |
 | [sshimpanzee](https://github.com/lexfo/sshimpanzee) | TCP | Uses dns2tcp protocol internally |
 | [iodine](https://github.com/yarrick/iodine) | NS | Create NS delegation, run your own iodined |
@@ -308,3 +393,7 @@ MIT
 ## Credits
 
 Created by [NumeX](https://numex.sh). Based on the [THC ToolsWeNeed](https://github.com/orgs/hackerschoice/projects/4/views/1?pane=issue&itemId=54763597) proposal by SkyperTHC.
+
+Public instances hosted by [@extencil](https://github.com/extencil) on [haltman.io](https://haltman.io).
+Security: SSRF vulnerability reported by [@extencil](https://github.com/extencil).
+Multi-domain support contributed by [@extencil](https://github.com/extencil) ([#1](https://github.com/ohmymex/dns2tcp-gateway/pull/1)).
