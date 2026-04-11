@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/ohmymex/dns2tcp-gateway/internal/session"
 )
+
+var errTunnelLimit = errors.New("tunnel limit reached")
 
 // tunnelResponse is the JSON response for tunnel creation.
 type tunnelResponse struct {
@@ -85,7 +88,7 @@ func (s *Server) handleCreateTCP(w http.ResponseWriter, r *http.Request) {
 
 	sess, err := s.createSession(r, session.ModeTCP, ip, port)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		s.handleCreateError(w, r, err)
 		return
 	}
 
@@ -126,7 +129,7 @@ func (s *Server) handleCreateNS(w http.ResponseWriter, r *http.Request) {
 
 	sess, err := s.createSession(r, session.ModeNS, ip, port)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		s.handleCreateError(w, r, err)
 		return
 	}
 
@@ -148,7 +151,7 @@ func (s *Server) handleCreateNS(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateRTCP(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.createSession(r, session.ModeRTCP, "", 0)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error())
+		s.handleCreateError(w, r, err)
 		return
 	}
 
@@ -203,11 +206,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	subdomain := r.PathValue("subdomain")
 
-	/* extract token from Authorization: Bearer <token> */
-	token := ""
-	if auth := r.Header.Get("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
-		token = auth[7:]
-	}
+	token := extractBearerToken(r)
 	if token == "" {
 		s.writeError(w, http.StatusUnauthorized, "missing Authorization: Bearer <token>")
 		return
@@ -236,12 +235,81 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// handleList returns all tunnels owned by the requester's IP.
+// Tokens are deliberately omitted to prevent lateral privilege escalation
+// on shared IPs (office NAT, VPN).
+func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
+	ownerIP := extractClientIP(r, s.cfg.ReverseProxy)
+	sessions := s.store.ListByOwner(r.Context(), ownerIP)
+
+	type tunnelInfo struct {
+		Subdomain string `json:"subdomain"`
+		Domain    string `json:"domain"`
+		Mode      string `json:"mode"`
+		Target    string `json:"target,omitempty"`
+		RTCPPort  int    `json:"rtcp_port,omitempty"`
+		CreatedAt string `json:"created_at"`
+		ExpiresAt string `json:"expires_at"`
+	}
+
+	tunnels := make([]tunnelInfo, 0, len(sessions))
+	for _, sess := range sessions {
+		tunnels = append(tunnels, tunnelInfo{
+			Subdomain: sess.Subdomain,
+			Domain:    fmt.Sprintf("%s.%s", sess.Subdomain, s.cfg.PrimaryDomain()),
+			Mode:      sess.Mode.String(),
+			Target:    sess.Target(),
+			RTCPPort:  sess.RTCPPort,
+			CreatedAt: sess.CreatedAt.Format(time.RFC3339),
+			ExpiresAt: sess.ExpiresAt.Format(time.RFC3339),
+		})
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"tunnels": tunnels,
+		"count":   len(tunnels),
+		"limit":   s.cfg.MaxTunnelsPerIP,
+	})
+}
+
+// handleExtend refreshes a tunnel's TTL. Requires Bearer token (same as DELETE).
+func (s *Server) handleExtend(w http.ResponseWriter, r *http.Request) {
+	subdomain := r.PathValue("subdomain")
+
+	token := extractBearerToken(r)
+	if token == "" {
+		s.writeError(w, http.StatusUnauthorized, "missing Authorization: Bearer <token>")
+		return
+	}
+
+	sess, ok := s.store.Get(r.Context(), subdomain)
+	if !ok {
+		s.writeError(w, http.StatusNotFound, "tunnel not found or expired")
+		return
+	}
+	if sess.Token != token {
+		s.writeError(w, http.StatusForbidden, "invalid token")
+		return
+	}
+
+	updated, ok := s.store.ExtendTTL(r.Context(), subdomain, s.cfg.SessionTTL)
+	if !ok {
+		s.writeError(w, http.StatusNotFound, "tunnel not found or expired")
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"subdomain":  updated.Subdomain,
+		"expires_at": updated.ExpiresAt.Format(time.RFC3339),
+		"message":    fmt.Sprintf("tunnel extended by %s", s.cfg.SessionTTL),
+	})
+}
+
 func (s *Server) createSession(r *http.Request, mode session.Mode, ip string, port int) (*session.Session, error) {
-	// Check per-IP tunnel limit.
 	ownerIP := extractClientIP(r, s.cfg.ReverseProxy)
 	existing := s.store.ListByOwner(r.Context(), ownerIP)
 	if len(existing) >= s.cfg.MaxTunnelsPerIP {
-		return nil, fmt.Errorf("max tunnels per ip reached (%d)", s.cfg.MaxTunnelsPerIP)
+		return nil, errTunnelLimit
 	}
 
 	id, err := session.GenerateID()
@@ -289,6 +357,27 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, v any) {
 
 func (s *Server) writeError(w http.ResponseWriter, status int, msg string) {
 	s.writeJSON(w, status, errorResponse{Error: msg})
+}
+
+// handleCreateError writes the appropriate error response for tunnel creation failures.
+func (s *Server) handleCreateError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, errTunnelLimit) {
+		ownerIP := extractClientIP(r, s.cfg.ReverseProxy)
+		count := len(s.store.ListByOwner(r.Context(), ownerIP))
+		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"error": fmt.Sprintf("tunnel limit reached (%d/%d)", count, s.cfg.MaxTunnelsPerIP),
+			"hint":  "list your tunnels: GET /v1/tunnels",
+		})
+		return
+	}
+	s.writeError(w, http.StatusInternalServerError, err.Error())
+}
+
+func extractBearerToken(r *http.Request) string {
+	if auth := r.Header.Get("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
+		return auth[7:]
+	}
+	return ""
 }
 
 /* extractClientIP: only trust XFF when behind a reverse proxy */

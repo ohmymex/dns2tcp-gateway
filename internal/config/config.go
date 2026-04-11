@@ -79,7 +79,7 @@ func Default() Config {
 		RTCPPortMin:     30000,
 		RTCPPortMax:     40000,
 		RateLimit:       30,
-		MaxTunnelsPerIP: 5,
+		MaxTunnelsPerIP: 10,
 		DNSUDPSize:      4096,
 		AdminContact:    "",    // derived from Domain in main.go
 		TLSEnabled:      false,

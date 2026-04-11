@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.2.0
+
+### Features
+
+* Native Go client (`dns2tcp-client`): drop-in replacement for dns2tcpc, zero external dependencies
+  * Port forwarding mode (`-l <port>`) and SSH ProxyCommand mode (`-l -`)
+  * Sliding window with NOP pool matching C client behavior (QUEUE_SIZE=48, WINDOW=24, NOP=8)
+  * Downstream ordering buffer for public resolver query reordering
+  * Retry with fresh DNS txID after 1 second timeout
+  * Compatible with all tested resolvers: Direct, Cloudflare, Quad9, Verisign
+* `GET /v1/tunnels`: list your tunnels by IP (tokens hidden for security)
+* `PATCH /v1/{subdomain}`: extend tunnel TTL with Bearer token auth
+* Configurable per-IP tunnel limit via `GATEWAY_MAX_TUNNELS_PER_IP` (default raised from 5 to 10)
+* Tunnel limit error now returns 429 with hint to list/delete endpoints
+
+### Changes
+
+* Both binaries (`dns2tcp-gateway` + `dns2tcp-client`) ship in the same release archive
+* Bearer token extraction refactored into shared helper
+
 ## v0.1.5
 
 ### Features

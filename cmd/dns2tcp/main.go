@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -129,6 +130,12 @@ func loadConfig() config.Config {
 	}
 	if v := os.Getenv("GATEWAY_IP"); v != "" {
 		cfg.GatewayIP = v
+	}
+
+	if v := os.Getenv("GATEWAY_MAX_TUNNELS_PER_IP"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.MaxTunnelsPerIP = n
+		}
 	}
 
 	// Explicit overrides (take precedence over domain-derived values).
