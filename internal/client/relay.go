@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
@@ -202,6 +203,9 @@ func (r *Relay) sendNOP() error {
 		return err
 	}
 
+	if old, collision := r.txToSeq[txID]; collision {
+		r.logger.Warn("txid collision on NOP", "txid", txID, "new_seq", seq, "old_seq", old)
+	}
 	r.window[seq] = &windowSlot{
 		seq:    seq,
 		txID:   txID,
@@ -239,6 +243,9 @@ func (r *Relay) drainUpstream() {
 		}
 
 		r.upBuf = r.upBuf[n:]
+		if old, collision := r.txToSeq[txID]; collision {
+			r.logger.Warn("txid collision on data", "txid", txID, "new_seq", seq, "old_seq", old)
+		}
 		r.window[seq] = &windowSlot{
 			seq:    seq,
 			txID:   txID,
@@ -296,6 +303,15 @@ func (r *Relay) handleResponse(msg *dns.Msg) (bool, error) {
 		return false, fmt.Errorf("no TXT record in response (seq=%d)", seq)
 	}
 
+	// Stale duplicate detection: the server echoes the query seq in pkt.Seq.
+	// If it doesn't match slot.seq, a late response from the DoT resolver
+	// arrived after its txID was recycled for a different query — drop it.
+	if pkt.Seq != slot.seq {
+		r.logger.Debug("stale duplicate dropped",
+			"txid", msg.Id, "slot_seq", slot.seq, "pkt_seq", pkt.Seq)
+		return false, nil
+	}
+
 	if pkt.IsDesauth() {
 		r.removeSlot(slot)
 		r.logger.Info("server sent DESAUTH")
@@ -307,6 +323,11 @@ func (r *Relay) handleResponse(msg *dns.Msg) (bool, error) {
 		data := make([]byte, len(pkt.Payload))
 		copy(data, pkt.Payload)
 		r.downBuf[seq] = data
+		preview := data
+		if len(preview) > 8 {
+			preview = preview[:8]
+		}
+		r.logger.Debug("recv data", "seq", seq, "txid", msg.Id, "bytes", len(data), "hex", hex.EncodeToString(preview))
 	}
 	r.downSeen[seq] = true
 	r.removeSlot(slot)
@@ -325,7 +346,11 @@ func (r *Relay) flushDownstream() error {
 			if _, err := r.local.Write(data); err != nil {
 				return fmt.Errorf("local write: %w", err)
 			}
-			r.logger.Debug("downstream", "bytes", len(data), "seq", r.nextDownSeq)
+			preview := data
+			if len(preview) > 8 {
+				preview = preview[:8]
+			}
+			r.logger.Debug("downstream", "bytes", len(data), "seq", r.nextDownSeq, "hex", hex.EncodeToString(preview))
 			delete(r.downBuf, r.nextDownSeq)
 			delete(r.downSeen, r.nextDownSeq)
 		} else if r.downSeen[r.nextDownSeq] {
@@ -363,7 +388,11 @@ func (r *Relay) checkRetries() {
 			continue
 		}
 
+		// Unique txID: avoid aliasing with another in-flight slot.
 		newID := dns.Id()
+		for _, exists := r.txToSeq[newID]; exists; _, exists = r.txToSeq[newID] {
+			newID = dns.Id()
+		}
 		binary.BigEndian.PutUint16(slot.packed[0:2], newID)
 
 		if err := r.transport.Send(slot.packed); err != nil {
@@ -392,7 +421,12 @@ func (r *Relay) sendDesauth() {
 }
 
 /* buildAndSend constructs a DNS TXT query from a protocol packet and sends it.
- * Returns the packed message (for retries) and the DNS transaction ID. */
+ * Returns the packed message (for retries) and the DNS transaction ID.
+ *
+ * Ensures the generated txID is unique across all in-flight window slots.
+ * With up to 24 outstanding queries and 65536 possible IDs, collisions are
+ * rare (~0.04%) but can cause a stale response to be attributed to the wrong
+ * seq. This loop resolves it without meaningful overhead. */
 func (r *Relay) buildAndSend(pkt *protocol.Packet, command string) ([]byte, uint16, error) {
 	qname := protocol.EncodeQuery(pkt, command, r.domain)
 
@@ -400,6 +434,11 @@ func (r *Relay) buildAndSend(pkt *protocol.Packet, command string) ([]byte, uint
 	msg.SetQuestion(dns.Fqdn(qname), dns.TypeTXT)
 	msg.RecursionDesired = true
 	msg.SetEdns0(4096, false)
+
+	// Guarantee txID uniqueness among in-flight queries.
+	for _, exists := r.txToSeq[msg.Id]; exists; _, exists = r.txToSeq[msg.Id] {
+		msg.Id = dns.Id()
+	}
 
 	packed, err := msg.Pack()
 	if err != nil {

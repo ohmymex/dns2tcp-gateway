@@ -91,6 +91,15 @@ func DecodeQuery(qname, zone string) (*ParsedQuery, error) {
 		}
 	}
 
+	/*
+	 * Strip Go-relay seq uniqueness prefix if present: exactly 4 lowercase hex chars.
+	 * Valid dns2tcp base64 data labels are always >=10 chars (7-byte minimum packet),
+	 * so a 4-char label is unambiguously our prefix. C client (dns2tcpc) sends no prefix.
+	 */
+	if len(dataLabels) > 0 && len(dataLabels[0]) == 4 && isHexString(dataLabels[0]) {
+		dataLabels = dataLabels[1:]
+	}
+
 	// Reassemble base64 data: join labels (dots are just DNS label separators).
 	encoded := strings.Join(dataLabels, "")
 
@@ -139,10 +148,19 @@ func EncodeTXTResponse(p *Packet, answerIndex int) string {
  * Base64 data is split into 63-byte DNS labels when needed.
  */
 func EncodeQuery(pkt *Packet, command, domain string) string {
+	/*
+	 * Prepend 4-hex seq label for QNAME uniqueness after DNS case normalization.
+	 * Caching resolvers (e.g. Cloudflare) lowercase QNAMEs before serving from cache.
+	 * base64 uses A-Z (values 0-25) and a-z (values 26-51), so seq=N and seq=N+26
+	 * produce identical lowercased QNAMEs. The hex prefix distinguishes them:
+	 * "0001.8sEAAAABBA..." != "001b.8sEAAAAbBA..." even after lowercasing.
+	 */
+	seqLabel := fmt.Sprintf("%04x", pkt.Seq)
 	encoded := encoding.EncodeToString(pkt.Marshal())
 
 	// Split base64 into DNS-safe labels (max 63 chars per label).
 	var parts []string
+	parts = append(parts, seqLabel)
 	for len(encoded) > 63 {
 		parts = append(parts, encoded[:63])
 		encoded = encoded[63:]
@@ -193,9 +211,10 @@ func MaxQueryPayload(domain string) int {
 	overhead++ // root null byte
 
 	available := 255 - overhead
-	if available <= 0 {
+	if available <= 5 {
 		return 0
 	}
+	available -= 5 // Go relay seq prefix label: 1 length byte + 4 hex chars = 5 wire bytes.
 
 	// Each base64 label costs 1 wire byte (length prefix) + up to 63 data bytes.
 	var b64 int
@@ -246,4 +265,15 @@ func EncodeTXTChunks(p *Packet, answerIndex int) []string {
 		chunks = append(chunks, data)
 	}
 	return chunks
+}
+
+/* isHexString reports whether s consists entirely of lowercase hex digits [0-9a-f].
+ * Used to detect the Go-relay seq uniqueness prefix in DecodeQuery. */
+func isHexString(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
 }

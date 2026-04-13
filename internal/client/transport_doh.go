@@ -37,19 +37,21 @@ func newDoHTransport(url string) (*dohTransport, error) {
 	}, nil
 }
 
-/* Send packs raw bytes as a DNS message and fires it asynchronously.
- * The response lands on Responses(). */
+/* Send fires an async DoH request and routes the response to Responses().
+ *
+ * We copy data before spawning the goroutine because the relay's retry
+ * path (checkRetries) mutates slot.packed in-place after Send returns.
+ * A synchronous UDP Write copies into the kernel buffer immediately so
+ * the same caller mutation is safe there; DoH cannot make that guarantee. */
 func (t *dohTransport) Send(data []byte) error {
-	msg := new(dns.Msg)
-	if err := msg.Unpack(data); err != nil {
-		return fmt.Errorf("unpacking DNS message for DoH: %w", err)
-	}
+	wire := make([]byte, len(data))
+	copy(wire, data)
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		resp, err := t.post(ctx, data)
+		resp, err := t.post(ctx, wire)
 		if err != nil {
 			return
 		}
