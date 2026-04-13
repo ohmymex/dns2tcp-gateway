@@ -209,8 +209,8 @@ func (c *Client) replySlot(slot *seqSlot, pkt *protocol.Packet) {
 	}
 }
 
-// advanceHead: move past REPLIED slots, evict to cache. Must hold c.mu.
-// Stops at any gap (missing seq) -- doSweep handles stuck-head advancement.
+/* advanceHead: move past REPLIED slots, evict to cache. Must hold c.mu.
+ * Stops at any gap (missing seq) -- doSweep handles stuck-head advancement. */
 func (c *Client) advanceHead() {
 	for {
 		slot, ok := c.ring[c.nextDispatchSeq]

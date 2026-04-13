@@ -303,9 +303,11 @@ func (r *Relay) handleResponse(msg *dns.Msg) (bool, error) {
 		return false, fmt.Errorf("no TXT record in response (seq=%d)", seq)
 	}
 
-	// Stale duplicate detection: the server echoes the query seq in pkt.Seq.
-	// If it doesn't match slot.seq, a late response from the DoT resolver
-	// arrived after its txID was recycled for a different query — drop it.
+	/*
+	 * Stale duplicate detection: the server echoes the query seq in pkt.Seq.
+	 * If it doesn't match slot.seq, a late response from the DoT resolver
+	 * arrived after its txID was recycled for a different query; drop it.
+	 */
 	if pkt.Seq != slot.seq {
 		r.logger.Debug("stale duplicate dropped",
 			"txid", msg.Id, "slot_seq", slot.seq, "pkt_seq", pkt.Seq)
