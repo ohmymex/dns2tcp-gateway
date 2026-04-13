@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.1
+
+### Features
+
+* DoT transport: `dns2tcp-client` now accepts `tls://` resolver prefix for DNS-over-TLS (e.g., `-d tls://1.1.1.1`)
+* DoH transport: accepts `https://` resolver prefix for DNS-over-HTTPS (e.g., `-d https://1.1.1.1/dns-query`)
+
+### Fixes
+
+* DNS case normalization: caching resolvers (Cloudflare, Quad9) lowercase QNAMEs before cache lookups. dns2tcp base64 uses A-Z (values 0-25) and a-z (26-51), so seq=N and seq=N+26 produce identical lowercased QNAMEs, causing the wrong cached response to be returned. Fixed by prepending a 4-hex sequence label to all Go client queries (`0001.data...` vs `001b.data...`), making colliding sequences distinct after lowercasing. C client (dns2tcpc) is unaffected and sends no prefix.
+
 ## v0.2.0
 
 ### Features

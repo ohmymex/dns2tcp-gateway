@@ -88,18 +88,20 @@ ssh -o ProxyCommand="dns2tcp-client -z $SUB.tun.numex.sh -r tunnel -l - -d 1.1.1
 | `-z` | DNS zone (e.g. `m6kfjz.tun.numex.sh`) |
 | `-r` | Resource name (e.g. `tunnel`). Omit to list available resources. |
 | `-l` | Local listen port, or `-` for stdin/stdout |
-| `-d` | DNS resolver (default: system resolver from /etc/resolv.conf) |
+| `-d` | DNS resolver. Plain IP for UDP (e.g. `1.1.1.1`), `tls://` for DoT (e.g. `tls://1.1.1.1`), `https://` for DoH (e.g. `https://1.1.1.1/dns-query`). Default: system resolver. |
 | `-k` | Tunnel authentication key (if server requires one) |
 
 ## Supported DNS resolvers
 
-| Resolver | Status | Notes |
-|----------|--------|-------|
-| Direct (gateway IP) | Works | Best performance, no intermediary |
-| Cloudflare 1.1.1.1 | Works | |
-| Quad9 9.9.9.9 | Works | |
-| Verisign 64.6.64.6 | Works | |
-| Google 8.8.8.8 | Incompatible | 0x20 case randomization breaks base64 in QNAME |
+| Resolver | Transport | Status | Notes |
+|----------|-----------|--------|-------|
+| Direct (gateway IP) | UDP | Works | Best performance, no intermediary |
+| Cloudflare 1.1.1.1 | UDP | Works | |
+| Cloudflare 1.1.1.1 | DoT (`tls://1.1.1.1`) | Works | Recommended for restricted networks |
+| Cloudflare 1.1.1.1 | DoH (`https://1.1.1.1/dns-query`) | Works | Use when DNS port 53 is blocked |
+| Quad9 9.9.9.9 | UDP | Works | |
+| Verisign 64.6.64.6 | UDP | Works | |
+| Google 8.8.8.8 | UDP | Incompatible | 0x20 case randomization breaks base64 in QNAME |
 
 Google Public DNS applies case randomization to query names for cache poisoning resistance. Since dns2tcp encodes payload as case sensitive base64 in DNS labels, this mangles the data. There is no server side fix for this. Use Cloudflare, Quad9, or Verisign instead.
 
