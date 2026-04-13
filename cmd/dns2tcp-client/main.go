@@ -29,7 +29,7 @@ func run() error {
 	resource := flag.String("r", "", "resource name (e.g. tunnel)")
 	listen := flag.String("l", "", "local port or - for stdio")
 	key := flag.String("k", "", "tunnel authentication key")
-	resolver := flag.String("d", "", "DNS resolver (default: system)")
+	resolver := flag.String("d", "", "DNS resolver: 1.1.1.1 (UDP), https://1.1.1.1/dns-query (DoH), tls://1.1.1.1 (DoT). Default: system resolver.")
 	showVersion := flag.Bool("version", false, "show version and exit")
 
 	flag.Usage = func() {
@@ -38,7 +38,10 @@ func run() error {
 		fmt.Fprintf(os.Stderr, "  dns2tcp-client -z <domain> -r <resource> -l <port|-> [-k key] [-d resolver]\n\n")
 		fmt.Fprintf(os.Stderr, "Examples:\n")
 		fmt.Fprintf(os.Stderr, "  dns2tcp-client -z abc123.tun.numex.sh -r tunnel -l 2222 -d 1.1.1.1\n")
+		fmt.Fprintf(os.Stderr, "  dns2tcp-client -z abc123.tun.numex.sh -r tunnel -l 2222 -d https://1.1.1.1/dns-query\n")
+		fmt.Fprintf(os.Stderr, "  dns2tcp-client -z abc123.tun.numex.sh -r tunnel -l 2222 -d tls://1.1.1.1\n")
 		fmt.Fprintf(os.Stderr, "  ssh -o ProxyCommand=\"dns2tcp-client -z abc123.tun.numex.sh -r tunnel -l - -d 1.1.1.1\" user@target\n\n")
+		fmt.Fprintf(os.Stderr, "  Note: Google 8.8.8.8 is incompatible (0x20 case randomization corrupts payloads).\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 	}

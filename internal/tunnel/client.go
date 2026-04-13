@@ -26,14 +26,6 @@ const (
 	slotExpiry    = 500 * time.Millisecond
 	sweepInterval = 100 * time.Millisecond // expiry ticker interval
 	DrainWait     = 600 * time.Millisecond // safety-net timeout, sweep should NOP first
-
-	/*
-	 * headGracePeriod: delay before first dispatch at session start.
-	 * Through public resolvers, queries from the same batch arrive out
-	 * of order (higher seq first). This lets the full batch assemble so
-	 * finalizeHead can pick the lowest seq. Only applies once.
-	 */
-	headGracePeriod = 50 * time.Millisecond
 )
 
 // slotStatus tracks the lifecycle of a seq slot in the ring.
@@ -84,11 +76,10 @@ type Client struct {
 	pendingData []byte
 	connecting  bool // guards concurrent ConnectTCP
 
-	ring            map[uint16]*seqSlot    // active query slots by seq
-	nextDispatchSeq uint16                 // head: next seq to receive data
-	headReady       bool                   // set on first query
-	dispatching     bool                   // locked after first data dispatch
-	headGraceUntil  time.Time              // initial batch assembly window
+	ring            map[uint16]*seqSlot         // active query slots by seq
+	nextDispatchSeq uint16                      // head: next seq to receive data
+	headReady       bool                        // set when TCP connects (head = 1)
+	headGapSince    time.Time                   // non-zero when head seq absent from ring
 	dispatched      map[uint16]*protocol.Packet // evicted reply cache for retries
 
 	stopSweep chan struct{}
@@ -138,6 +129,8 @@ func (c *Client) ConnectTCP(target string) error {
 		return fmt.Errorf("tunnel: connecting to %s: %w", target, err)
 	}
 	c.tcpConn = conn
+	c.nextDispatchSeq = 1 // relay always starts at seq=1
+	c.headReady = true
 	c.mu.Unlock()
 
 	c.logger.Info("tcp connection established", "target", target)
@@ -179,15 +172,6 @@ func (c *Client) tryDispatch() {
 		return
 	}
 
-	/* grace period: let initial batch assemble before dispatching */
-	if !c.headGraceUntil.IsZero() {
-		if time.Now().Before(c.headGraceUntil) {
-			return
-		}
-		// Grace period expired. Finalize head to the lowest seq in ring.
-		c.finalizeHead()
-	}
-
 	for {
 		slot, ok := c.ring[c.nextDispatchSeq]
 		if !ok || slot.status != slotUsed {
@@ -210,7 +194,6 @@ func (c *Client) tryDispatch() {
 		}
 
 		pkt := c.makeDataPacket(slot.seq, slot.maxBytes)
-		c.dispatching = true
 		c.replySlot(slot, pkt)
 		c.advanceHead()
 	}
@@ -226,21 +209,16 @@ func (c *Client) replySlot(slot *seqSlot, pkt *protocol.Packet) {
 	}
 }
 
-// advanceHead: move past REPLIED/missing slots, evict to cache. Must hold c.mu.
+/* advanceHead: move past REPLIED slots, evict to cache. Must hold c.mu.
+ * Stops at any gap (missing seq) -- doSweep handles stuck-head advancement. */
 func (c *Client) advanceHead() {
 	for {
 		slot, ok := c.ring[c.nextDispatchSeq]
 		if !ok {
-			// Gap: this seq was never seen (lost query, or already evicted).
-			// Only advance if the next seq has a slot, otherwise stop.
-			if _, hasNext := c.ring[c.nextDispatchSeq+1]; hasNext {
-				c.nextDispatchSeq++
-				continue
-			}
-			return
+			return // gap: wait for seq to arrive or doSweep to advance
 		}
 		if slot.status == slotUsed {
-			return // still waiting
+			return // still waiting for data or expiry NOP
 		}
 		// REPLIED: evict to dispatched cache.
 		if slot.reply != nil {
@@ -248,28 +226,10 @@ func (c *Client) advanceHead() {
 		}
 		delete(c.ring, c.nextDispatchSeq)
 		c.nextDispatchSeq++
-	}
-}
-
-// finalizeHead: set head to lowest seq in ring after grace period. Must hold c.mu.
-func (c *Client) finalizeHead() {
-	c.headGraceUntil = time.Time{} // clear grace
-
-	if len(c.ring) == 0 {
-		return
-	}
-
-	// Find the lowest seq in the ring.
-	first := true
-	var lowest uint16
-	for seq := range c.ring {
-		if first || seqBefore(seq, lowest) {
-			lowest = seq
-			first = false
+		if c.nextDispatchSeq == 0 {
+			c.nextDispatchSeq = 1
 		}
 	}
-	c.nextDispatchSeq = lowest
-	c.logger.Debug("head finalized", "seq", lowest, "ring_size", len(c.ring))
 }
 
 // expirySweep: background NOP for old USED slots (C server's queue_flush_expired_data).
@@ -310,6 +270,31 @@ func (c *Client) doSweep() {
 	}
 	c.advanceHead()
 
+	/*
+	 * Stuck-head advancement: if the head seq is absent from the ring
+	 * (query genuinely lost in transit, no retry arrived), advance past it
+	 * after slotExpiry. This unblocks pendingData when a single query packet
+	 * is dropped end-to-end despite the relay's retry logic.
+	 */
+	if c.headReady {
+		if _, ok := c.ring[c.nextDispatchSeq]; !ok {
+			if c.headGapSince.IsZero() {
+				c.headGapSince = now
+			} else if now.Sub(c.headGapSince) >= slotExpiry {
+				c.logger.Debug("stuck head advanced", "seq", c.nextDispatchSeq)
+				c.headGapSince = time.Time{}
+				c.nextDispatchSeq++
+				if c.nextDispatchSeq == 0 {
+					c.nextDispatchSeq = 1
+				}
+				c.advanceHead()
+				c.tryDispatch()
+			}
+		} else {
+			c.headGapSince = time.Time{}
+		}
+	}
+
 	if len(c.dispatched) > QueueSize*2 {
 		c.pruneDispatched()
 	}
@@ -334,9 +319,15 @@ func (c *Client) makeDataPacket(seq uint16, maxBytes int) *protocol.Packet {
 	}
 	chunk := make([]byte, n)
 	copy(chunk, c.pendingData[:n])
+
+	preview := chunk
+	if len(preview) > 8 {
+		preview = preview[:8]
+	}
 	c.pendingData = c.pendingData[n:]
 
-	c.logger.Debug("dispatch data", "seq", seq, "bytes", n, "remaining", len(c.pendingData))
+	c.logger.Debug("dispatch data", "seq", seq, "bytes", n, "remaining", len(c.pendingData),
+		"hex", fmt.Sprintf("%x", preview))
 
 	return &protocol.Packet{
 		SessionID: c.SessionID,
@@ -463,7 +454,12 @@ func (c *Client) DrainPending(clientSeq uint16, maxBytes int) *protocol.Packet {
 	// Check evicted cache: retry for a seq that advanced past.
 	if cached, ok := c.dispatched[clientSeq]; ok {
 		c.mu.Unlock()
-		c.logger.Debug("replay from cache", "seq", clientSeq)
+		preview := cached.Payload
+		if len(preview) > 8 {
+			preview = preview[:8]
+		}
+		c.logger.Debug("replay from cache", "seq", clientSeq, "type", cached.Type,
+			"hex", fmt.Sprintf("%x", preview))
 		return cached
 	}
 
@@ -477,19 +473,8 @@ func (c *Client) DrainPending(clientSeq uint16, maxBytes int) *protocol.Packet {
 		}
 	}
 
-	/* init head with grace period; first arrival may not be lowest seq */
-	if !c.headReady {
-		c.nextDispatchSeq = clientSeq
-		c.headReady = true
-		c.headGraceUntil = time.Now().Add(headGracePeriod)
-	} else if !c.dispatching && seqBefore(clientSeq, c.nextDispatchSeq) {
-		diff := c.nextDispatchSeq - clientSeq
-		if diff < QueueSize {
-			c.nextDispatchSeq = clientSeq
-		}
-	}
-
-	if c.dispatching && seqBefore(clientSeq, c.nextDispatchSeq) {
+	// Stale: seq is behind the current dispatch head.
+	if c.headReady && seqBefore(clientSeq, c.nextDispatchSeq) {
 		c.mu.Unlock()
 		c.logger.Debug("stale seq behind head, NOP", "seq", clientSeq, "head", c.nextDispatchSeq)
 		return &protocol.Packet{

@@ -2,153 +2,65 @@ package client
 
 import (
 	"fmt"
-	"net"
-	"sync"
+	"strings"
 	"time"
 
 	"github.com/miekg/dns"
 )
 
-/*
- * Transport is a DNS UDP transport layer.
+/* Transport is the DNS transport abstraction used by the client.
  *
- * It supports two modes of receiving responses:
+ * Two modes:
  *   - Synchronous: SendAndReceive blocks until the matching response arrives.
  *     Used during auth, resource listing, and connect phases.
  *   - Asynchronous: responses flow to the Responses() channel.
  *     Used by the relay during steady-state data transfer.
- *
- * Both modes share a single UDP socket and reader goroutine.
- * Synchronous waiters take priority: if a response matches a registered
- * waiter (by DNS txID), it goes there. Otherwise it goes to the async channel.
  */
-type Transport struct {
-	conn *net.UDPConn
-
-	mu      sync.Mutex
-	waiters map[uint16]chan *dns.Msg
-
-	respCh chan *dns.Msg
-	done   chan struct{}
+type Transport interface {
+	Send(data []byte) error
+	SendAndReceive(msg *dns.Msg, timeout time.Duration) (*dns.Msg, error)
+	Responses() <-chan *dns.Msg
+	Close()
 }
 
-// NewTransport connects to the given DNS resolver over UDP ("ip:port").
-func NewTransport(resolver string) (*Transport, error) {
-	addr, err := net.ResolveUDPAddr("udp", resolver)
-	if err != nil {
-		return nil, fmt.Errorf("resolving %s: %w", resolver, err)
-	}
-
-	conn, err := net.DialUDP("udp", nil, addr)
-	if err != nil {
-		return nil, fmt.Errorf("connecting to %s: %w", resolver, err)
-	}
-
-	t := &Transport{
-		conn:    conn,
-		waiters: make(map[uint16]chan *dns.Msg),
-		respCh:  make(chan *dns.Msg, 64),
-		done:    make(chan struct{}),
-	}
-	go t.readLoop()
-	return t, nil
-}
-
-// Send writes a pre-packed DNS message to the resolver.
-func (t *Transport) Send(data []byte) error {
-	_, err := t.conn.Write(data)
-	return err
-}
-
-/* SendAndReceive sends a DNS message and blocks until the matching response
- * arrives or the timeout expires. Used for synchronous protocol steps. */
-func (t *Transport) SendAndReceive(msg *dns.Msg, timeout time.Duration) (*dns.Msg, error) {
-	packed, err := msg.Pack()
-	if err != nil {
-		return nil, fmt.Errorf("packing DNS message: %w", err)
-	}
-
-	ch := make(chan *dns.Msg, 1)
-	t.mu.Lock()
-	t.waiters[msg.Id] = ch
-	t.mu.Unlock()
-
-	defer func() {
-		t.mu.Lock()
-		delete(t.waiters, msg.Id)
-		t.mu.Unlock()
-	}()
-
-	if _, err := t.conn.Write(packed); err != nil {
-		return nil, fmt.Errorf("sending DNS query: %w", err)
-	}
-
-	select {
-	case resp := <-ch:
-		return resp, nil
-	case <-time.After(timeout):
-		return nil, fmt.Errorf("timeout waiting for DNS response")
-	case <-t.done:
-		return nil, fmt.Errorf("transport closed")
-	}
-}
-
-// Responses returns the async response channel used by the relay.
-func (t *Transport) Responses() <-chan *dns.Msg {
-	return t.respCh
-}
-
-func (t *Transport) readLoop() {
-	buf := make([]byte, 4096)
-	for {
-		t.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		n, err := t.conn.Read(buf)
-		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				select {
-				case <-t.done:
-					return
-				default:
-					continue
-				}
-			}
-			// Non-timeout error: check if we're shutting down.
-			select {
-			case <-t.done:
-			default:
-			}
-			return
+/* NewTransport creates a transport based on the resolver address format:
+ *   "1.1.1.1" or "1.1.1.1:53"              -> UDP (plain DNS)
+ *   "https://1.1.1.1/dns-query"             -> DoH (DNS over HTTPS)
+ *   "tls://1.1.1.1" or "tls://1.1.1.1:853" -> DoT (DNS over TLS)
+ */
+func NewTransport(resolver string) (Transport, error) {
+	switch {
+	case strings.HasPrefix(resolver, "https://"):
+		return newDoHTransport(resolver)
+	case strings.HasPrefix(resolver, "tls://"):
+		addr := strings.TrimPrefix(resolver, "tls://")
+		if !strings.Contains(addr, ":") {
+			addr += ":853"
 		}
-
-		msg := new(dns.Msg)
-		if err := msg.Unpack(buf[:n]); err != nil {
-			continue
-		}
-
-		// Synchronous waiters take priority.
-		t.mu.Lock()
-		if ch, ok := t.waiters[msg.Id]; ok {
-			delete(t.waiters, msg.Id)
-			t.mu.Unlock()
-			ch <- msg
-			continue
-		}
-		t.mu.Unlock()
-
-		// Async: relay picks these up.
-		select {
-		case t.respCh <- msg:
-		default:
-		}
-	}
-}
-
-// Close shuts down the transport and its reader goroutine.
-func (t *Transport) Close() {
-	select {
-	case <-t.done:
+		return newDoTTransport(addr)
 	default:
-		close(t.done)
+		if !strings.Contains(resolver, ":") {
+			resolver += ":53"
+		}
+		return newUDPTransport(resolver)
 	}
-	t.conn.Close()
+}
+
+/* resolverDescription returns a human-readable description of the resolver format. */
+func resolverDescription() string {
+	return `DNS resolver address. Formats:
+    1.1.1.1 or 1.1.1.1:53              plain UDP (default)
+    https://1.1.1.1/dns-query          DNS over HTTPS (DoH)
+    tls://1.1.1.1 or tls://1.1.1.1:853 DNS over TLS (DoT)
+
+  Well-known DoH endpoints:
+    https://1.1.1.1/dns-query          Cloudflare
+    https://9.9.9.9/dns-query          Quad9
+    https://dns.quad9.net/dns-query    Quad9 (hostname)
+
+  Note: Google 8.8.8.8 is incompatible (0x20 case randomization corrupts base64 payloads).`
+}
+
+func wrapSendError(transport string, err error) error {
+	return fmt.Errorf("%s send: %w", transport, err)
 }
