@@ -48,7 +48,7 @@ type windowSlot struct {
  * Queries that don't get a response within retryAfter are resent with a new txID.
  */
 type Relay struct {
-	transport  *Transport
+	transport  Transport
 	local      io.ReadWriteCloser
 	domain     string
 	sessionID  uint16
@@ -76,7 +76,7 @@ type Relay struct {
 }
 
 // NewRelay creates a relay for an authenticated and connected tunnel session.
-func NewRelay(transport *Transport, local io.ReadWriteCloser, domain string, sessionID uint16, logger *slog.Logger) *Relay {
+func NewRelay(transport Transport, local io.ReadWriteCloser, domain string, sessionID uint16, logger *slog.Logger) *Relay {
 	return &Relay{
 		transport:  transport,
 		local:      local,

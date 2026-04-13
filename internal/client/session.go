@@ -16,7 +16,7 @@ const commandTimeout = 5 * time.Second
 /* Session handles the dns2tcp handshake: auth, resource listing, and connect.
  * All operations are synchronous request-response over the transport. */
 type Session struct {
-	transport *Transport
+	transport Transport
 	domain    string
 	key       string
 	sessionID uint16
@@ -25,7 +25,7 @@ type Session struct {
 
 /* NewSession creates a session handler for the given tunnel domain.
  * domain is the full tunnel domain including subdomain (e.g. "m6kfjz.tun.numex.sh"). */
-func NewSession(transport *Transport, domain, key string, logger *slog.Logger) *Session {
+func NewSession(transport Transport, domain, key string, logger *slog.Logger) *Session {
 	return &Session{
 		transport: transport,
 		domain:    strings.TrimSuffix(domain, "."),
