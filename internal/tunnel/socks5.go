@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"time"
 )
 
@@ -96,7 +97,7 @@ func handleSOCKS5(conn net.Conn, logger *slog.Logger) error {
 	if err := binary.Read(conn, binary.BigEndian, &port); err != nil {
 		return fmt.Errorf("reading port: %w", err)
 	}
-	target := fmt.Sprintf("%s:%d", host, port)
+	target := net.JoinHostPort(host, strconv.Itoa(int(port)))
 
 	// SSRF protection: block private/reserved IPs (direct and via DNS resolution).
 	if err := checkSOCKS5Target(host); err != nil {
