@@ -103,6 +103,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/tunnels", s.handleList)
 	mux.HandleFunc("POST /v1/tcp/{ip}/{port}", s.handleCreateTCP)
 	mux.HandleFunc("POST /v1/ns/{ip}/{port}", s.handleCreateNS)
+	mux.HandleFunc("POST /v1/socks5", s.handleCreateSOCKS5)
 	mux.HandleFunc("POST /v1/rtcp", s.handleCreateRTCP)
 	mux.HandleFunc("GET /v1/status/{subdomain}", s.handleStatus)
 	mux.HandleFunc("PATCH /v1/{subdomain}", s.handleExtend)

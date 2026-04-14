@@ -148,6 +148,27 @@ func (s *Server) handleCreateNS(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleCreateSOCKS5(w http.ResponseWriter, r *http.Request) {
+	sess, err := s.createSession(r, session.ModeSOCKS5, "", 0)
+	if err != nil {
+		s.handleCreateError(w, r, err)
+		return
+	}
+
+	fqdn := fmt.Sprintf("%s.%s", sess.Subdomain, s.cfg.PrimaryDomain())
+	s.writeJSON(w, http.StatusCreated, tunnelResponse{
+		ID:        sess.ID,
+		Subdomain: sess.Subdomain,
+		Domain:    fqdn,
+		Domains:   s.tunnelDomains(sess.Subdomain),
+		Token:     sess.Token,
+		Mode:      sess.Mode.String(),
+		CreatedAt: sess.CreatedAt.Format(time.RFC3339),
+		ExpiresAt: sess.ExpiresAt.Format(time.RFC3339),
+		Message:   fmt.Sprintf("SOCKS5 proxy at %s -- use: dns2tcp-client -z %s -r tunnel -l 1080 -d <resolver>", fqdn, fqdn),
+	})
+}
+
 func (s *Server) handleCreateRTCP(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.createSession(r, session.ModeRTCP, "", 0)
 	if err != nil {
