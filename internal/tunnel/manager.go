@@ -191,9 +191,16 @@ func (m *Manager) handleConnect(ctx context.Context, pkt *protocol.Packet, subdo
 		return m.errPacket(pkt.SessionID, "resource not found"), nil
 	}
 
-	if err := client.ConnectTCP(target); err != nil {
-		m.logger.Error("tcp connect failed", "target", target, "error", err)
-		return m.errPacket(pkt.SessionID, "connection failed"), nil
+	if target == "socks5" {
+		if err := client.ConnectSOCKS5(); err != nil {
+			m.logger.Error("socks5 setup failed", "error", err)
+			return m.errPacket(pkt.SessionID, "connection failed"), nil
+		}
+	} else {
+		if err := client.ConnectTCP(target); err != nil {
+			m.logger.Error("tcp connect failed", "target", target, "error", err)
+			return m.errPacket(pkt.SessionID, "connection failed"), nil
+		}
 	}
 
 	m.logger.Info("tunnel connected", "session_id", pkt.SessionID, "resource", resourceName, "target", target)
@@ -231,30 +238,39 @@ func (m *Manager) handleData(pkt *protocol.Packet) (*protocol.Packet, error) {
 	return client.DrainPending(pkt.Seq, MaxPayloadSize), nil
 }
 
-// resolveResource looks up the REST API session by subdomain to find the TCP target.
-// The subdomain comes from the DNS query (e.g. "m6kfjz" from "data.=connect.m6kfjz.tun.numex.sh").
+/* resolveResource looks up the REST API session by subdomain.
+ * Returns the TCP target address for ModeTCP, "socks5" marker for ModeSOCKS5,
+ * or "" if the session is not found or not a connectable mode. */
 func (m *Manager) resolveResource(ctx context.Context, subdomain string) string {
 	sess, ok := m.store.Get(ctx, subdomain)
 	if !ok {
 		return ""
 	}
-	if sess.Mode == session.ModeTCP {
+	switch sess.Mode {
+	case session.ModeTCP:
 		return sess.Target()
+	case session.ModeSOCKS5:
+		return "socks5"
+	default:
+		return ""
 	}
-	return ""
 }
 
-// buildResourceList returns the available resource for this subdomain's session.
-// Format matches dns2tcp: "name:host:port"
+/* buildResourceList returns the resource descriptor for this subdomain's session.
+ * Format matches dns2tcp: "name:target". Shown when client runs without -r flag. */
 func (m *Manager) buildResourceList(ctx context.Context, subdomain string) string {
 	sess, ok := m.store.Get(ctx, subdomain)
 	if !ok {
 		return ""
 	}
-	if sess.Mode == session.ModeTCP {
+	switch sess.Mode {
+	case session.ModeTCP:
 		return fmt.Sprintf("tunnel:%s", sess.Target())
+	case session.ModeSOCKS5:
+		return "tunnel:socks5"
+	default:
+		return ""
 	}
-	return ""
 }
 
 func (m *Manager) getClient(id uint16) *Client {

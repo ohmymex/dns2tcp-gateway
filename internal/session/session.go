@@ -15,6 +15,7 @@ const (
 	ModeTCP
 	ModeNS
 	ModeRTCP
+	ModeSOCKS5
 )
 
 // String returns the human-readable name of the mode.
@@ -26,6 +27,8 @@ func (m Mode) String() string {
 		return "ns"
 	case ModeRTCP:
 		return "rtcp"
+	case ModeSOCKS5:
+		return "socks5"
 	default:
 		return "unknown"
 	}
@@ -40,6 +43,8 @@ func ParseMode(s string) (Mode, error) {
 		return ModeNS, nil
 	case "rtcp":
 		return ModeRTCP, nil
+	case "socks5":
+		return ModeSOCKS5, nil
 	default:
 		return ModeUnknown, fmt.Errorf("session: unknown mode %q", s)
 	}

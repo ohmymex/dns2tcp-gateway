@@ -109,6 +109,37 @@ func NewClient(sessionID uint16, logger *slog.Logger) *Client {
 	}
 }
 
+/*
+ * ConnectSOCKS5 sets up the client for SOCKS5 proxy mode using net.Pipe().
+ * Instead of dialing a fixed target at connect time, it creates two connected
+ * in-process net.Conn ends: clientEnd feeds into the existing ring buffer /
+ * readLoop machinery, serverEnd runs the SOCKS5 server goroutine which reads
+ * the negotiation from the byte stream and dials dynamically.
+ * The tunnel layer sees no difference -- tcpConn is just a net.Conn.
+ */
+func (c *Client) ConnectSOCKS5() error {
+	c.mu.Lock()
+	if c.tcpConn != nil || c.connecting {
+		c.mu.Unlock()
+		c.logger.Debug("socks5 already connected or connecting, ignoring")
+		return nil
+	}
+
+	serverEnd, clientEnd := net.Pipe()
+	c.tcpConn = clientEnd
+	c.nextDispatchSeq = 1
+	c.headReady = true
+	c.mu.Unlock()
+
+	c.logger.Info("socks5 proxy ready")
+
+	go runSOCKS5Server(serverEnd, c.logger)
+	go c.readLoop()
+	c.sweepOnce.Do(func() { go c.expirySweep() })
+
+	return nil
+}
+
 // ConnectTCP opens a TCP connection to the target resource.
 func (c *Client) ConnectTCP(target string) error {
 	c.mu.Lock()
