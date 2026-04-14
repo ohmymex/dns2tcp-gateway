@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.3.0
+
+### Features
+
+* SOCKS5 proxy mode: `POST /v1/socks5` creates a tunnel where the destination is determined dynamically by SOCKS5 protocol inside the byte stream. No fixed IP:PORT at creation time. The DNS tunnel acts as a full SOCKS5 proxy.
+  * Gateway runs an in-process SOCKS5 server (RFC 1928) using `net.Pipe()`; the tunnel layer is transparent
+  * Supports IPv4, IPv6, and domain name destinations
+  * SSRF protection: private/reserved IP ranges blocked at both direct IP and DNS pre-resolution level
+  * Use: `dns2tcp-client -z SUB.domain -r tunnel -l 1080 -d RESOLVER`, then point any SOCKS5-aware tool at `localhost:1080`
+
+### Fixes
+
+* IPv6 SOCKS5 targets now formatted correctly with brackets (`[addr]:port` via `net.JoinHostPort`)
+
 ## v0.2.1
 
 ### Features

@@ -36,6 +36,16 @@ curl https://domain.com/v1/ns/1.2.3.4/53
 # -> "adsgr.domain.com NS will point to 1.2.3.4:53"
 ```
 
+**SOCKS5 proxy:** tunnel any destination dynamically, no fixed IP:PORT at creation time
+
+```bash
+curl -X POST https://domain.com/v1/socks5
+# -> "SOCKS5 proxy at adsgr.domain.com -- use: dns2tcp-client -z adsgr.domain.com -r tunnel -l 1080 -d <resolver>"
+
+dns2tcp-client -z adsgr.domain.com -r tunnel -l 1080 -d tls://1.1.1.1
+curl --socks5 localhost:1080 https://ifconfig.me
+```
+
 **Reverse TCP (RTCP):** connect TO the gateway and wait for the DNS tunnel to activate
 
 ```bash
@@ -241,6 +251,36 @@ Delegates NS for the subdomain to `ip:port`. Use this if you run your own DNS tu
 
 ```bash
 curl -X POST https://tun.domain.com/v1/ns/5.6.7.8/53
+```
+
+### Create SOCKS5 proxy tunnel
+
+```
+POST /v1/socks5
+```
+
+Creates a SOCKS5 proxy tunnel. The destination is determined per-connection by the SOCKS5 client, not at creation time.
+
+```bash
+curl -X POST https://tun.domain.com/v1/socks5
+```
+
+```json
+{
+  "subdomain": "a3f2bc",
+  "domain": "a3f2bc.tun.domain.com",
+  "token": "c2334e6cfda45870a132286ac5d298e4",
+  "mode": "socks5",
+  "message": "SOCKS5 proxy at a3f2bc.tun.domain.com -- use: dns2tcp-client -z a3f2bc.tun.domain.com -r tunnel -l 1080 -d <resolver>"
+}
+```
+
+```bash
+# Connect the tunnel
+dns2tcp-client -z a3f2bc.tun.domain.com -r tunnel -l 1080 -d tls://1.1.1.1
+
+# Use the SOCKS5 proxy
+curl --socks5 localhost:1080 https://ifconfig.me
 ```
 
 ### Create reverse TCP tunnel
