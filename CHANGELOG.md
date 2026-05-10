@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.4.0
+
+### Features
+
+* `GATEWAY_EXIT_SOCKS5`: route all outbound tunnel TCP connections through a SOCKS5 proxy (e.g. Mullvad) for liability shielding. Format: `host:port` or `user:pass@host:port`. Both TCP forward mode and SOCKS5 proxy mode route through the configured proxy.
+
+### Fixes
+
+* IPv6 system resolver: `dns2tcp-client` no longer produces invalid addresses when `/etc/resolv.conf` contains an IPv6 nameserver. IPv6 addresses are now wrapped in brackets before appending the port.
+
+### Internal
+
+* `DialFunc` abstraction: outbound TCP connections in the tunnel layer now use an injectable dialer function, keeping SOCKS5 proxy construction decoupled from internal packages.
+
 ## v0.3.0
 
 ### Features
