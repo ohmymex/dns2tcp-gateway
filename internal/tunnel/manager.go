@@ -25,7 +25,7 @@ func (r Resource) Addr() string {
 }
 
 const (
-	maxClients       = 1000            // max concurrent tunnel clients
+	maxClients       = 1000             // max concurrent tunnel clients
 	authTimeout      = 30 * time.Second // unauthenticated clients get reaped after this
 	clientCleanupInt = 10 * time.Second
 )
@@ -38,16 +38,18 @@ type Manager struct {
 	store    session.Store
 	logger   *slog.Logger
 	key      string
+	dialFn   DialFunc
 	stopOnce sync.Once
 	stop     chan struct{}
 }
 
 // NewManager creates a new tunnel manager.
-func NewManager(store session.Store, key string, logger *slog.Logger) *Manager {
+func NewManager(store session.Store, key string, dialFn DialFunc, logger *slog.Logger) *Manager {
 	m := &Manager{
 		clients: make(map[uint16]*Client),
 		store:   store,
 		key:     key,
+		dialFn:  dialFn,
 		logger:  logger.With("component", "tunnel"),
 		stop:    make(chan struct{}),
 	}
@@ -100,7 +102,7 @@ func (m *Manager) handleAuth(pkt *protocol.Packet, subdomain string) (*protocol.
 			return nil, err
 		}
 
-		client := NewClient(sessionID, m.logger)
+		client := NewClient(sessionID, m.dialFn, m.logger)
 		client.Challenge = challenge
 		client.Subdomain = subdomain
 

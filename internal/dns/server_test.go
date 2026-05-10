@@ -42,7 +42,7 @@ func startTestServer(t *testing.T) (*Server, session.Store, string) {
 	store := session.NewMemoryStore(logger)
 	cfg := testConfig(addr)
 
-	tunnelMgr := tunnel.NewManager(store, "", logger)
+	tunnelMgr := tunnel.NewManager(store, "", tunnel.DefaultDialFn(), logger)
 	srv := New(cfg, store, tunnelMgr, logger)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("starting dns server: %v", err)
