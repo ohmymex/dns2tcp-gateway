@@ -184,6 +184,18 @@ dns2tcpc -r tunnel -z $SUB.tun.domain.com -l <local_port> 1.1.1.1
 nc 127.0.0.1 <local_port>
 ```
 
+### Exit routing via SOCKS5 (optional)
+
+Set `GATEWAY_EXIT_SOCKS5` to route all outbound tunnel TCP connections through a SOCKS5 proxy. Useful for liability shielding, e.g. routing exits through Mullvad.
+
+With Mullvad: set up WireGuard on your VPS using `AllowedIPs = 10.64.0.1/32` so only SOCKS5 traffic goes through the tunnel, then:
+
+```bash
+GATEWAY_EXIT_SOCKS5=10.64.0.1:1080 ./dns2tcp-gateway
+```
+
+Without `GATEWAY_EXIT_SOCKS5`, outbound connections exit directly from the VPS IP.
+
 ## API
 
 ### List your tunnels
@@ -355,6 +367,7 @@ All configuration is through environment variables.
 | `GATEWAY_REVERSE_PROXY` | `false` | Run behind nginx/caddy |
 | `GATEWAY_TUNNEL_KEY` | (empty) | Shared auth key, empty = no auth |
 | `GATEWAY_MAX_TUNNELS_PER_IP` | `10` | Max concurrent tunnels per source IP |
+| `GATEWAY_EXIT_SOCKS5` | (empty) | Route all outbound TCP exits through a SOCKS5 proxy, e.g. `10.64.0.1:1080` or `user:pass@host:port` |
 | `LOG_LEVEL` | `info` | Log level: debug, info, warn, error |
 
 ## Build from source

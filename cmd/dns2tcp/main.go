@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/net/proxy"
+
 	"github.com/ohmymex/dns2tcp-gateway/internal/api"
 	"github.com/ohmymex/dns2tcp-gateway/internal/banner"
 	"github.com/ohmymex/dns2tcp-gateway/internal/config"
@@ -51,7 +53,11 @@ func run() error {
 	if tunnelKey == "" {
 		logger.Warn("GATEWAY_TUNNEL_KEY not set, dns2tcp auth is open to any client")
 	}
-	tunnelMgr := tunnel.NewManager(store, tunnelKey, logger)
+	dialFn, err := buildDialFn(logger)
+	if err != nil {
+		return err
+	}
+	tunnelMgr := tunnel.NewManager(store, tunnelKey, dialFn, logger)
 
 	// RTCP relay manager for reverse TCP sessions.
 	relayMgr := relay.NewManager(cfg.RTCPPortMin, cfg.RTCPPortMax, logger)
@@ -169,6 +175,44 @@ func loadConfig() config.Config {
 	cfg.ApplyDomainDefaults()
 
 	return cfg
+}
+
+/*
+ * buildDialFn constructs the outbound TCP dialer for tunnel exits.
+ * When GATEWAY_EXIT_SOCKS5 is set, all tunnel TCP connections are routed
+ * through the given SOCKS5 proxy (e.g. Mullvad) for liability shielding.
+ * Format: "host:port" for no-auth, "user:pass@host:port" with credentials.
+ */
+func buildDialFn(logger *slog.Logger) (tunnel.DialFunc, error) {
+	addr := os.Getenv("GATEWAY_EXIT_SOCKS5")
+	if addr == "" {
+		return tunnel.DefaultDialFn(), nil
+	}
+
+	var auth *proxy.Auth
+	if at := strings.LastIndex(addr, "@"); at >= 0 {
+		creds := addr[:at]
+		addr = addr[at+1:]
+		if colon := strings.Index(creds, ":"); colon >= 0 {
+			auth = &proxy.Auth{
+				User:     creds[:colon],
+				Password: creds[colon+1:],
+			}
+		}
+	}
+
+	d, err := proxy.SOCKS5("tcp", addr, auth, proxy.Direct)
+	if err != nil {
+		return nil, fmt.Errorf("exit socks5 %q: %w", addr, err)
+	}
+
+	cd, ok := d.(proxy.ContextDialer)
+	if !ok {
+		return nil, fmt.Errorf("exit socks5: dialer does not support context")
+	}
+
+	logger.Info("outbound TCP routed via SOCKS5 exit", "proxy", addr)
+	return cd.DialContext, nil
 }
 
 func envBool(key string) bool {

@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -47,14 +48,14 @@ const (
  * It blocks until the session ends or an error occurs.
  * Errors are logged at debug level; they are expected on normal shutdown.
  */
-func runSOCKS5Server(conn net.Conn, logger *slog.Logger) {
+func runSOCKS5Server(conn net.Conn, dialFn DialFunc, logger *slog.Logger) {
 	defer conn.Close()
-	if err := handleSOCKS5(conn, logger); err != nil {
+	if err := handleSOCKS5(conn, dialFn, logger); err != nil {
 		logger.Debug("socks5 session ended", "error", err)
 	}
 }
 
-func handleSOCKS5(conn net.Conn, logger *slog.Logger) error {
+func handleSOCKS5(conn net.Conn, dialFn DialFunc, logger *slog.Logger) error {
 	// Step 1: auth negotiation.
 	// Client sends: VER(1) NMETHODS(1) METHODS(n)
 	header := make([]byte, 2)
@@ -106,7 +107,9 @@ func handleSOCKS5(conn net.Conn, logger *slog.Logger) error {
 		return err
 	}
 
-	upstream, err := net.DialTimeout("tcp", target, socks5DialTimeout)
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), socks5DialTimeout)
+	defer dialCancel()
+	upstream, err := dialFn(dialCtx, "tcp", target)
 	if err != nil {
 		socks5Reply(conn, socks5ReplyHostUnreach)
 		return fmt.Errorf("dialing %s: %w", target, err)

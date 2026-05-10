@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -93,11 +94,12 @@ type Client struct {
 	flushing      bool
 
 	isClosed bool
+	dialFn   DialFunc
 	logger   *slog.Logger
 }
 
 // NewClient creates a new unauthenticated client with the given session ID.
-func NewClient(sessionID uint16, logger *slog.Logger) *Client {
+func NewClient(sessionID uint16, dialFn DialFunc, logger *slog.Logger) *Client {
 	return &Client{
 		SessionID:  sessionID,
 		CreatedAt:  time.Now(),
@@ -105,6 +107,7 @@ func NewClient(sessionID uint16, logger *slog.Logger) *Client {
 		ring:       make(map[uint16]*seqSlot),
 		dispatched: make(map[uint16]*protocol.Packet),
 		stopSweep:  make(chan struct{}),
+		dialFn:     dialFn,
 		logger:     logger.With("session_id", sessionID),
 	}
 }
@@ -133,7 +136,7 @@ func (c *Client) ConnectSOCKS5() error {
 
 	c.logger.Info("socks5 proxy ready")
 
-	go runSOCKS5Server(serverEnd, c.logger)
+	go runSOCKS5Server(serverEnd, c.dialFn, c.logger)
 	go c.readLoop()
 	c.sweepOnce.Do(func() { go c.expirySweep() })
 
@@ -151,7 +154,9 @@ func (c *Client) ConnectTCP(target string) error {
 	c.connecting = true
 	c.mu.Unlock()
 
-	conn, err := net.DialTimeout("tcp", target, 10*time.Second)
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer dialCancel()
+	conn, err := c.dialFn(dialCtx, "tcp", target)
 
 	c.mu.Lock()
 	c.connecting = false

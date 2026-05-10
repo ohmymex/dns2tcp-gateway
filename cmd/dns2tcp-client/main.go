@@ -155,7 +155,11 @@ func resolveServer(explicit string) (string, error) {
 	if len(config.Servers) == 0 {
 		return "", fmt.Errorf("no nameservers in /etc/resolv.conf (use -d to specify resolver)")
 	}
-	return config.Servers[0] + ":" + config.Port, nil
+	server := config.Servers[0]
+	if strings.Contains(server, ":") {
+		server = "[" + server + "]"
+	}
+	return server + ":" + config.Port, nil
 }
 
 func logLevel() slog.Level {
